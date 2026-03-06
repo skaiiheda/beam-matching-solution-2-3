@@ -425,6 +425,18 @@ def main():
 
     with col1:
         st.subheader("Фазовое пространство")
+
+        position_options = [
+            "Вход (начало)", "После Q1", "После Q2",
+            "После Q3", "После Q4", "Выход (конец)"
+        ]
+        selected_idx = st.selectbox(
+            "Выберите позицию:",
+            range(len(position_options)),
+            format_func=lambda i: position_options[i],
+            key="phase_space_position"
+        )
+
         tab_x, tab_y = st.tabs(["Плоскость X (x, x')", "Плоскость Y (y, y')"])
 
         fig_phase_x, fig_phase_y = create_phase_space_plot(
@@ -432,6 +444,7 @@ def main():
             st.session_state.config,
             st.session_state.quads,
             st.session_state.twiss_target,
+            selected_position_index=selected_idx
         )
 
         with tab_x:
