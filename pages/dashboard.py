@@ -26,21 +26,24 @@ from components import (
 
 
 def init_session_state():
-    """Initialize Streamlit session state with default values."""
     if "initialized" not in st.session_state:
+        # Сначала все параметры с безопасными дефолтами
         st.session_state.twiss_in = DEFAULT_TWISS_IN
         st.session_state.twiss_target = DEFAULT_TWISS_TARGET
-        st.session_state.config = DEFAULT_CONFIG
         st.session_state.use_penalty = False
         st.session_state.beta_limit = 10.0
         st.session_state.penalty_weight = 0.01
+        st.session_state.quads = QuadrupoleSettings(k1=0.1, k2=-0.1, k3=0.1, k4=-0.1)
+        st.session_state.config = DEFAULT_CONFIG
 
-        # Initial optimization
+        st.session_state.initialized = True  # ← ставим ДО оптимизации
+
+        # Оптимизация — если упадёт, параметры уже инициализированы безопасно
         result = optimize_quadrupoles(
-            DEFAULT_TWISS_IN, DEFAULT_TWISS_TARGET, DEFAULT_CONFIG,
-            use_penalty=st.session_state.use_penalty,
-            beta_limit=st.session_state.beta_limit,
-            penalty_weight=st.session_state.penalty_weight,
+            DEFAULT_TWISS_IN,
+            DEFAULT_TWISS_TARGET,
+            DEFAULT_CONFIG,
+            use_penalty=False,
         )
         st.session_state.quads = result["quads"]
         st.session_state.config = BeamlineConfig(
@@ -48,24 +51,42 @@ def init_session_state():
             emit_x=DEFAULT_CONFIG.emit_x,
             emit_y=DEFAULT_CONFIG.emit_y,
         )
-        st.session_state.initialized = True
 
 
 def reset_params():
-    """Reset all parameters to defaults."""
     st.session_state.twiss_in = DEFAULT_TWISS_IN
     st.session_state.twiss_target = DEFAULT_TWISS_TARGET
-    st.session_state.config = DEFAULT_CONFIG
-    st.session_state.quads = QuadrupoleSettings(k1=0.1, k2=-0.1, k3=0.1, k4=-0.1)
+    st.session_state.use_penalty = False
+    st.session_state.beta_limit = 10.0
+    st.session_state.penalty_weight = 0.01
+
+    # Пересчитываем оптимальные квадруполи и drift_length
+    result = optimize_quadrupoles(
+        DEFAULT_TWISS_IN,
+        DEFAULT_TWISS_TARGET,
+        DEFAULT_CONFIG,
+        use_penalty=False,
+    )
+    st.session_state.quads = result["quads"]
+    st.session_state.config = BeamlineConfig(
+        drift_length=result["drift_length"],  # ← оптимальное значение
+        emit_x=DEFAULT_CONFIG.emit_x,
+        emit_y=DEFAULT_CONFIG.emit_y,
+    )
 
 
 def optimize_quads():
     """Optimize quadrupole strengths to match target Twiss."""
     with st.spinner("Оптимизация квадруполей..."):
+        # Когда включён штраф за большие β, фиксируем длину дрейфа —
+        # оптимизируем только квадруполи. Это предотвращает уход оптимизатора
+        # в область с большим drift_length, где согласование ухудшается до 1000%+.
+        optimize_drift = not st.session_state.use_penalty
         result = optimize_quadrupoles(
             st.session_state.twiss_in,
             st.session_state.twiss_target,
             st.session_state.config,
+            optimize_drift=optimize_drift,
             use_penalty=st.session_state.use_penalty,
             beta_limit=st.session_state.beta_limit,
             penalty_weight=st.session_state.penalty_weight,
@@ -328,7 +349,7 @@ def main():
     """Main dashboard page."""
     # Page config
     st.set_page_config(
-        page_title="Панель управления согласованием пучка",
+        page_title="Моделирование согласования пучка",
         page_icon="⚛️",
         layout="wide",
         initial_sidebar_state="expanded",
@@ -338,7 +359,7 @@ def main():
     init_session_state()
 
     # Header
-    st.title("⚛️ Панель управления согласованием пучка")
+    st.title("Dashboard")
     st.markdown("Визуализация физики ускорителя - Система 4-Quad FODO")
 
     # Parameters panel in sidebar

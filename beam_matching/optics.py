@@ -229,59 +229,90 @@ def optimize_quadrupoles(
     twiss_in: TwissParamsXY,
     twiss_target: TwissParamsXY,
     config: BeamlineConfig,
-    optimize_drift: bool = True,  # новый параметр
+    optimize_drift: bool = True,
     use_penalty: bool = False,
     beta_limit: float = 10.0,
     penalty_weight: float = 0.01,
 ) -> dict:
+    # Количество точек для расчёта β-максимума при штрафе должно совпадать
+    # с тем, что используется при отображении, иначе оптимизатор минимизирует
+    # "другой" максимум и результат после отображения может сильно отличаться.
+    # Компромисс: points_per_drift=20 — достаточно точно и быстро.
+    PTS = 20
 
-    def objective(x: np.ndarray) -> float:
-        quads = QuadrupoleSettings(k1=x[0], k2=x[1], k3=x[2], k4=x[3])
-        cfg = BeamlineConfig(
-            drift_length=x[4], emit_x=config.emit_x, emit_y=config.emit_y
-        )
+    if optimize_drift:
+        def objective(x: np.ndarray) -> float:
+            quads = QuadrupoleSettings(k1=x[0], k2=x[1], k3=x[2], k4=x[3])
+            cfg = BeamlineConfig(
+                drift_length=x[4], emit_x=config.emit_x, emit_y=config.emit_y
+            )
+            result_x, history_x = propagate_through_beamline_x(
+                twiss_in.x, cfg, quads, points_per_drift=PTS
+            )
+            result_y, history_y = propagate_through_beamline_y(
+                twiss_in.y, cfg, quads, points_per_drift=PTS
+            )
+            twiss_out = TwissParamsXY(x=result_x, y=result_y)
+            Mx = mismatch(
+                twiss_target.x.beta, twiss_target.x.alpha,
+                twiss_out.x.beta, twiss_out.x.alpha,
+            )
+            My = mismatch(
+                twiss_target.y.beta, twiss_target.y.alpha,
+                twiss_out.y.beta, twiss_out.y.alpha,
+            )
+            penalty = 0.0
+            if use_penalty:
+                beta_x_max = max(t.beta for _, t in history_x)
+                beta_y_max = max(t.beta for _, t in history_y)
+                penalty = (max(0, beta_x_max - beta_limit) / beta_limit) ** 2 + (
+                    max(0, beta_y_max - beta_limit) / beta_limit
+                ) ** 2
+            return Mx**2 + My**2 + penalty_weight * penalty
 
-        # points_per_drift=10 ускоряет оптимизацию в 5 раз
-        result_x, history_x = propagate_through_beamline_x(
-            twiss_in.x, cfg, quads, points_per_drift=10
-        )
-        result_y, history_y = propagate_through_beamline_y(
-            twiss_in.y, cfg, quads, points_per_drift=10
-        )
+        bounds = [
+            (-10.0, 10.0),  # k1
+            (-10.0, 10.0),  # k2
+            (-10.0, 10.0),  # k3
+            (-10.0, 10.0),  # k4
+            (0.3, 3.0),     # drift_length
+        ]
+        x0_drift = config.drift_length
 
-        twiss_out = TwissParamsXY(x=result_x, y=result_y)
-        Mx = mismatch(
-            twiss_target.x.beta,
-            twiss_target.x.alpha,
-            twiss_out.x.beta,
-            twiss_out.x.alpha,
-        )
-        My = mismatch(
-            twiss_target.y.beta,
-            twiss_target.y.alpha,
-            twiss_out.y.beta,
-            twiss_out.y.alpha,
-        )
+    else:
+        # Фиксированная длина дрейфа — оптимизируем только квадруполи (4 переменные)
+        def objective(x: np.ndarray) -> float:
+            quads = QuadrupoleSettings(k1=x[0], k2=x[1], k3=x[2], k4=x[3])
+            result_x, history_x = propagate_through_beamline_x(
+                twiss_in.x, config, quads, points_per_drift=PTS
+            )
+            result_y, history_y = propagate_through_beamline_y(
+                twiss_in.y, config, quads, points_per_drift=PTS
+            )
+            twiss_out = TwissParamsXY(x=result_x, y=result_y)
+            Mx = mismatch(
+                twiss_target.x.beta, twiss_target.x.alpha,
+                twiss_out.x.beta, twiss_out.x.alpha,
+            )
+            My = mismatch(
+                twiss_target.y.beta, twiss_target.y.alpha,
+                twiss_out.y.beta, twiss_out.y.alpha,
+            )
+            penalty = 0.0
+            if use_penalty:
+                beta_x_max = max(t.beta for _, t in history_x)
+                beta_y_max = max(t.beta for _, t in history_y)
+                penalty = (max(0, beta_x_max - beta_limit) / beta_limit) ** 2 + (
+                    max(0, beta_y_max - beta_limit) / beta_limit
+                ) ** 2
+            return Mx**2 + My**2 + penalty_weight * penalty
 
-        penalty = 0.0
-        if use_penalty:
-            beta_x_max = max(t.beta for _, t in history_x)
-            beta_y_max = max(t.beta for _, t in history_y)
-
-            penalty = (max(0, beta_x_max - beta_limit) / beta_limit) ** 2 + (
-                max(0, beta_y_max - beta_limit) / beta_limit
-            ) ** 2
-
-        return Mx**2 + My**2 + penalty_weight * penalty
-
-    # Границы: 4 квадруполя + длина дрейфа
-    bounds = [
-        (-10.0, 10.0),  # k1
-        (-10.0, 10.0),  # k2
-        (-10.0, 10.0),  # k3
-        (-10.0, 10.0),  # k4
-        (0.3, 3.0),  # drift_length
-    ]
+        bounds = [
+            (-10.0, 10.0),  # k1
+            (-10.0, 10.0),  # k2
+            (-10.0, 10.0),  # k3
+            (-10.0, 10.0),  # k4
+        ]
 
     # Шаг 1: глобальный поиск
     res_global = differential_evolution(
@@ -301,7 +332,12 @@ def optimize_quadrupoles(
         options={"xatol": 1e-12, "fatol": 1e-12, "maxiter": 50000},
     )
 
-    k1, k2, k3, k4, L = res_local.x
+    if optimize_drift:
+        k1, k2, k3, k4, L = res_local.x
+    else:
+        k1, k2, k3, k4 = res_local.x
+        L = config.drift_length
+
     return {
         "quads": QuadrupoleSettings(k1=k1, k2=k2, k3=k3, k4=k4),
         "drift_length": L,
