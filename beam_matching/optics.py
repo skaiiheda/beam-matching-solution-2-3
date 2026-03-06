@@ -175,10 +175,13 @@ def propagate_through_beamline_x(
 
 
 def propagate_through_beamline_y(
-    twiss_in: TwissParams, config: BeamlineConfig, quads: QuadrupoleSettings
+    twiss_in: TwissParams,
+    config: BeamlineConfig,
+    quads: QuadrupoleSettings,
+    points_per_drift: int = 50,
 ) -> Tuple[TwissParams, List[Tuple[float, TwissParams]]]:
     quads_y = QuadrupoleSettings(k1=-quads.k1, k2=-quads.k2, k3=-quads.k3, k4=-quads.k4)
-    return propagate_through_beamline_x(twiss_in, config, quads_y)
+    return propagate_through_beamline_x(twiss_in, config, quads_y, points_per_drift)
 
 
 def mismatch(beta_t, alpha_t, beta_a, alpha_a):
@@ -188,8 +191,8 @@ def mismatch(beta_t, alpha_t, beta_a, alpha_a):
     return 0.5 * (beta_t * gamma_a - 2 * alpha_t * alpha_a + gamma_t * beta_a) - 1
 
 
-def loss(twiss_out: TwissParamsXY, twiss_target: TwissParamsXY):
-
+def loss(twiss_out, twiss_target, twiss_history_x, twiss_history_y):
+    # Основное условие согласования
     Mx = mismatch(
         twiss_target.x.beta, twiss_target.x.alpha, twiss_out.x.beta, twiss_out.x.alpha
     )
@@ -197,7 +200,17 @@ def loss(twiss_out: TwissParamsXY, twiss_target: TwissParamsXY):
         twiss_target.y.beta, twiss_target.y.alpha, twiss_out.y.beta, twiss_out.y.alpha
     )
 
-    return Mx**2 + My**2
+    # Штраф за большие пики β-функции
+    beta_x_max = max(t.beta for _, t in twiss_history_x)
+    beta_y_max = max(t.beta for _, t in twiss_history_y)
+
+    beta_limit = 10.0  # максимально допустимый β в метрах
+    penalty = (max(0, beta_x_max - beta_limit) / beta_limit) ** 2 + (
+        max(0, beta_y_max - beta_limit) / beta_limit
+    ) ** 2
+
+    weight_penalty = 0.01  # небольшой вес, чтобы не мешать основной оптимизации
+    return Mx**2 + My**2 + weight_penalty * penalty
 
 
 def calculate_matching_error(
@@ -221,15 +234,41 @@ def optimize_quadrupoles(
 
     def objective(x: np.ndarray) -> float:
         quads = QuadrupoleSettings(k1=x[0], k2=x[1], k3=x[2], k4=x[3])
-        # Если разрешено — оптимизируем длину дрейфа тоже
         cfg = BeamlineConfig(
-            drift_length=x[4] if optimize_drift else config.drift_length,
-            emit_x=config.emit_x,
-            emit_y=config.emit_y,
+            drift_length=x[4], emit_x=config.emit_x, emit_y=config.emit_y
         )
-        result_x = propagate_through_beamline_x(twiss_in.x, cfg, quads)[0]
-        result_y = propagate_through_beamline_y(twiss_in.y, cfg, quads)[0]
-        return loss(TwissParamsXY(x=result_x, y=result_y), twiss_target)
+
+        # points_per_drift=10 ускоряет оптимизацию в 5 раз
+        result_x, history_x = propagate_through_beamline_x(
+            twiss_in.x, cfg, quads, points_per_drift=10
+        )
+        result_y, history_y = propagate_through_beamline_y(
+            twiss_in.y, cfg, quads, points_per_drift=10
+        )
+
+        twiss_out = TwissParamsXY(x=result_x, y=result_y)
+        Mx = mismatch(
+            twiss_target.x.beta,
+            twiss_target.x.alpha,
+            twiss_out.x.beta,
+            twiss_out.x.alpha,
+        )
+        My = mismatch(
+            twiss_target.y.beta,
+            twiss_target.y.alpha,
+            twiss_out.y.beta,
+            twiss_out.y.alpha,
+        )
+
+        beta_x_max = max(t.beta for _, t in history_x)
+        beta_y_max = max(t.beta for _, t in history_y)
+
+        beta_limit = 8.0  # ← было 15.0, теперь ниже реального пика
+        penalty = (max(0, beta_x_max - beta_limit) / beta_limit) ** 2 + (
+            max(0, beta_y_max - beta_limit) / beta_limit
+        ) ** 2
+
+        return Mx**2 + My**2 + 0.05 * penalty  # ← вес 0.05 вместо 0.01
 
     # Границы: 4 квадруполя + длина дрейфа
     bounds = [
