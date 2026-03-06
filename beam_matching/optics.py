@@ -37,8 +37,8 @@ class BeamlineElement:
     type: str
     position: float
     length: float
-    k: float = None
-    label: str = None
+    k: float | None = None
+    label: str | None = None
 
 
 def calculate_gamma(beta: float, alpha: float) -> float:

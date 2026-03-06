@@ -37,6 +37,11 @@ def init_session_state():
             DEFAULT_TWISS_IN, DEFAULT_TWISS_TARGET, DEFAULT_CONFIG
         )
         st.session_state.quads = result["quads"]
+        st.session_state.config = BeamlineConfig(
+            drift_length=result["drift_length"],
+            emit_x=DEFAULT_CONFIG.emit_x,
+            emit_y=DEFAULT_CONFIG.emit_y,
+        )
         st.session_state.initialized = True
 
 
@@ -55,12 +60,14 @@ def optimize_quads():
             st.session_state.twiss_in,
             st.session_state.twiss_target,
             st.session_state.config,
-            st.session_state.quads,
         )
         st.session_state.quads = result["quads"]
-        st.success(
-            f"Оптимизировано! Финальная ошибка: {result['error']:.8e} (итераций: {result['iterations']})"
+        st.session_state.config = BeamlineConfig(
+            drift_length=result["drift_length"],
+            emit_x=st.session_state.config.emit_x,
+            emit_y=st.session_state.config.emit_y,
         )
+        st.success(f"Оптимизировано! Финальная ошибка: {result['error']:.8e}")
 
 
 def parameters_panel() -> None:
@@ -193,15 +200,6 @@ def parameters_panel() -> None:
     # Beamline Configuration
     st.sidebar.subheader("Конфигурация пучкового канала")
 
-    drift_length = st.sidebar.slider(
-        "Drift Length (m)",
-        min_value=0.5,
-        max_value=2.0,
-        value=st.session_state.config.drift_length,
-        step=0.0001,
-        key="drift_length",
-    )
-
     emit_x = st.sidebar.number_input(
         "εx (nm·rad)",
         value=st.session_state.config.emit_x * 1e9,
@@ -222,7 +220,9 @@ def parameters_panel() -> None:
 
     # Update session state
     st.session_state.config = BeamlineConfig(
-        drift_length=drift_length, emit_x=emit_x * 1e-9, emit_y=emit_y * 1e-9
+        drift_length=st.session_state.config.drift_length,
+        emit_x=emit_x * 1e-9,
+        emit_y=emit_y * 1e-9,
     )
 
     st.sidebar.markdown("---")
