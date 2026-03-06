@@ -31,10 +31,16 @@ def init_session_state():
         st.session_state.twiss_in = DEFAULT_TWISS_IN
         st.session_state.twiss_target = DEFAULT_TWISS_TARGET
         st.session_state.config = DEFAULT_CONFIG
+        st.session_state.use_penalty = False
+        st.session_state.beta_limit = 10.0
+        st.session_state.penalty_weight = 0.01
 
         # Initial optimization
         result = optimize_quadrupoles(
-            DEFAULT_TWISS_IN, DEFAULT_TWISS_TARGET, DEFAULT_CONFIG
+            DEFAULT_TWISS_IN, DEFAULT_TWISS_TARGET, DEFAULT_CONFIG,
+            use_penalty=st.session_state.use_penalty,
+            beta_limit=st.session_state.beta_limit,
+            penalty_weight=st.session_state.penalty_weight,
         )
         st.session_state.quads = result["quads"]
         st.session_state.config = BeamlineConfig(
@@ -60,6 +66,9 @@ def optimize_quads():
             st.session_state.twiss_in,
             st.session_state.twiss_target,
             st.session_state.config,
+            use_penalty=st.session_state.use_penalty,
+            beta_limit=st.session_state.beta_limit,
+            penalty_weight=st.session_state.penalty_weight,
         )
         st.session_state.quads = result["quads"]
         st.session_state.config = BeamlineConfig(
@@ -224,6 +233,40 @@ def parameters_panel() -> None:
         emit_x=emit_x * 1e-9,
         emit_y=emit_y * 1e-9,
     )
+
+    st.sidebar.markdown("---")
+
+    # Penalty Parameters
+    st.sidebar.subheader("Параметры штрафа за большие β")
+
+    use_penalty = st.sidebar.checkbox(
+        "Использовать штраф за большие β-функции",
+        value=st.session_state.use_penalty,
+        key="use_penalty_checkbox",
+    )
+
+    beta_limit = st.sidebar.number_input(
+        "β_limit (m)",
+        value=st.session_state.beta_limit,
+        min_value=1.0,
+        max_value=50.0,
+        step=0.1,
+        key="beta_limit_input",
+    )
+
+    penalty_weight = st.sidebar.number_input(
+        "Вес штрафа",
+        value=st.session_state.penalty_weight,
+        min_value=0.001,
+        max_value=1.0,
+        step=0.001,
+        format="%.3f",
+        key="penalty_weight_input",
+    )
+
+    st.session_state.use_penalty = use_penalty
+    st.session_state.beta_limit = beta_limit
+    st.session_state.penalty_weight = penalty_weight
 
     st.sidebar.markdown("---")
 

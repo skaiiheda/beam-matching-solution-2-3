@@ -140,11 +140,10 @@ def test_optimization():
         DEFAULT_TWISS_IN,
         DEFAULT_TWISS_TARGET,
         DEFAULT_CONFIG,
-        max_iterations=100
+        use_penalty=False
     )
-    
+
     print(f"Optimization successful: {result['success']}")
-    print(f"Iterations: {result['iterations']}")
     print(f"Final error: {result['error']:.8e}")
     print(f"\nOptimal quadrupole strengths:")
     print(f"  k1 = {result['quads'].k1:.6f} m⁻²")

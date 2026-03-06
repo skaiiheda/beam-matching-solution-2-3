@@ -191,7 +191,7 @@ def mismatch(beta_t, alpha_t, beta_a, alpha_a):
     return 0.5 * (beta_t * gamma_a - 2 * alpha_t * alpha_a + gamma_t * beta_a) - 1
 
 
-def loss(twiss_out, twiss_target, twiss_history_x, twiss_history_y):
+def loss(twiss_out, twiss_target, twiss_history_x, twiss_history_y, use_penalty=False, beta_limit=10.0, penalty_weight=0.01):
     # Основное условие согласования
     Mx = mismatch(
         twiss_target.x.beta, twiss_target.x.alpha, twiss_out.x.beta, twiss_out.x.alpha
@@ -200,17 +200,17 @@ def loss(twiss_out, twiss_target, twiss_history_x, twiss_history_y):
         twiss_target.y.beta, twiss_target.y.alpha, twiss_out.y.beta, twiss_out.y.alpha
     )
 
-    # Штраф за большие пики β-функции
-    beta_x_max = max(t.beta for _, t in twiss_history_x)
-    beta_y_max = max(t.beta for _, t in twiss_history_y)
+    penalty = 0.0
+    if use_penalty:
+        # Штраф за большие пики β-функции
+        beta_x_max = max(t.beta for _, t in twiss_history_x)
+        beta_y_max = max(t.beta for _, t in twiss_history_y)
 
-    beta_limit = 10.0  # максимально допустимый β в метрах
-    penalty = (max(0, beta_x_max - beta_limit) / beta_limit) ** 2 + (
-        max(0, beta_y_max - beta_limit) / beta_limit
-    ) ** 2
+        penalty = (max(0, beta_x_max - beta_limit) / beta_limit) ** 2 + (
+            max(0, beta_y_max - beta_limit) / beta_limit
+        ) ** 2
 
-    weight_penalty = 0.01  # небольшой вес, чтобы не мешать основной оптимизации
-    return Mx**2 + My**2 + weight_penalty * penalty
+    return Mx**2 + My**2 + penalty_weight * penalty
 
 
 def calculate_matching_error(
@@ -230,6 +230,9 @@ def optimize_quadrupoles(
     twiss_target: TwissParamsXY,
     config: BeamlineConfig,
     optimize_drift: bool = True,  # новый параметр
+    use_penalty: bool = False,
+    beta_limit: float = 10.0,
+    penalty_weight: float = 0.01,
 ) -> dict:
 
     def objective(x: np.ndarray) -> float:
@@ -260,15 +263,16 @@ def optimize_quadrupoles(
             twiss_out.y.alpha,
         )
 
-        beta_x_max = max(t.beta for _, t in history_x)
-        beta_y_max = max(t.beta for _, t in history_y)
+        penalty = 0.0
+        if use_penalty:
+            beta_x_max = max(t.beta for _, t in history_x)
+            beta_y_max = max(t.beta for _, t in history_y)
 
-        beta_limit = 8.0  # ← было 15.0, теперь ниже реального пика
-        penalty = (max(0, beta_x_max - beta_limit) / beta_limit) ** 2 + (
-            max(0, beta_y_max - beta_limit) / beta_limit
-        ) ** 2
+            penalty = (max(0, beta_x_max - beta_limit) / beta_limit) ** 2 + (
+                max(0, beta_y_max - beta_limit) / beta_limit
+            ) ** 2
 
-        return Mx**2 + My**2 + 0.05 * penalty  # ← вес 0.05 вместо 0.01
+        return Mx**2 + My**2 + penalty_weight * penalty
 
     # Границы: 4 квадруполя + длина дрейфа
     bounds = [
