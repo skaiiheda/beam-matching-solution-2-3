@@ -179,18 +179,6 @@ def optimize_quads():
 
 
 def parameters_panel() -> None:
-    st.sidebar.header("Параметры")
-
-    # --- Ошибка согласования ---
-    twiss_out, _, _ = _propagate_current()
-    error = calculate_matching_error(twiss_out, st.session_state.twiss_target)
-    st.sidebar.metric(
-        "Ошибка согласования",
-        f"{error:.6f}",
-        delta_color="normal" if error < 0.1 else "inverse",
-    )
-    st.sidebar.markdown("---")
-
     # --- Число квадруполей ---
     st.sidebar.subheader("Конфигурация пучкового канала")
 
@@ -454,8 +442,7 @@ def main():
     init_session_state()
 
     n = st.session_state.n_quads
-    st.title("Dashboard")
-    st.markdown(f"Визуализация физики ускорителя — Система **4/5-Quad**")
+    st.title("Визуализация физики ускорителя — Система **4/5-Quad")
 
     parameters_panel()
 
@@ -493,7 +480,7 @@ def main():
 
     # --- Строка 2: β-функции ---
     st.markdown("---")
-    st.subheader("β-функции вдоль пучкового канала")
+    st.subheader("α- и β-функции вдоль пучкового канала")
     fig_beta = create_beta_plot(
         st.session_state.twiss_in,
         st.session_state.config,
