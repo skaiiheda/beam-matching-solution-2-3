@@ -30,9 +30,9 @@ def init_session_state():
         # Сначала все параметры с безопасными дефолтами
         st.session_state.twiss_in = DEFAULT_TWISS_IN
         st.session_state.twiss_target = DEFAULT_TWISS_TARGET
-        st.session_state.use_penalty = False
-        st.session_state.beta_limit = 10.0
-        st.session_state.penalty_weight = 0.01
+        st.session_state.use_penalty = True
+        st.session_state.beta_limit = 6.0
+        st.session_state.penalty_weight = 0.1
         st.session_state.quads = QuadrupoleSettings(k1=0.1, k2=-0.1, k3=0.1, k4=-0.1)
         st.session_state.config = DEFAULT_CONFIG
 
@@ -43,60 +43,58 @@ def init_session_state():
             DEFAULT_TWISS_IN,
             DEFAULT_TWISS_TARGET,
             DEFAULT_CONFIG,
-            use_penalty=False,
+            use_penalty=True,
+            beta_limit=6.0,
+            penalty_weight=0.1,
         )
         st.session_state.quads = result["quads"]
         st.session_state.config = BeamlineConfig(
             drift_length=result["drift_length"],
             emit_x=DEFAULT_CONFIG.emit_x,
             emit_y=DEFAULT_CONFIG.emit_y,
+            quad_length=DEFAULT_CONFIG.quad_length,
         )
 
 
 def reset_params():
     st.session_state.twiss_in = DEFAULT_TWISS_IN
     st.session_state.twiss_target = DEFAULT_TWISS_TARGET
-    st.session_state.use_penalty = False
-    st.session_state.beta_limit = 10.0
-    st.session_state.penalty_weight = 0.01
+    st.session_state.use_penalty = True
+    st.session_state.beta_limit = 6.0
+    st.session_state.penalty_weight = 0.1
 
     # Пересчитываем оптимальные квадруполи и drift_length
     result = optimize_quadrupoles(
         DEFAULT_TWISS_IN,
         DEFAULT_TWISS_TARGET,
         DEFAULT_CONFIG,
-        use_penalty=False,
+        use_penalty=True,
+        beta_limit=6.0,
+        penalty_weight=0.1,
     )
     st.session_state.quads = result["quads"]
     st.session_state.config = BeamlineConfig(
-        drift_length=result["drift_length"],  # ← оптимальное значение
+        drift_length=result["drift_length"],
         emit_x=DEFAULT_CONFIG.emit_x,
         emit_y=DEFAULT_CONFIG.emit_y,
+        quad_length=DEFAULT_CONFIG.quad_length,
     )
 
 
 def optimize_quads():
     """Optimize quadrupole strengths to match target Twiss."""
     with st.spinner("Оптимизация квадруполей..."):
-        # Когда включён штраф за большие β, фиксируем длину дрейфа —
-        # оптимизируем только квадруполи. Это предотвращает уход оптимизатора
-        # в область с большим drift_length, где согласование ухудшается до 1000%+.
-        optimize_drift = not st.session_state.use_penalty
+        # Добавляем параметр beta_penalty_weight
+        # Можно сделать слайдер в интерфейсе для его настройки
         result = optimize_quadrupoles(
             st.session_state.twiss_in,
             st.session_state.twiss_target,
             st.session_state.config,
-            optimize_drift=optimize_drift,
             use_penalty=st.session_state.use_penalty,
             beta_limit=st.session_state.beta_limit,
             penalty_weight=st.session_state.penalty_weight,
         )
         st.session_state.quads = result["quads"]
-        st.session_state.config = BeamlineConfig(
-            drift_length=result["drift_length"],
-            emit_x=st.session_state.config.emit_x,
-            emit_y=st.session_state.config.emit_y,
-        )
         st.success(f"Оптимизировано! Финальная ошибка: {result['error']:.8e}")
 
 
@@ -248,11 +246,23 @@ def parameters_panel() -> None:
         key="emit_y",
     )
 
+    quad_length = st.sidebar.number_input(
+        "Длина квадруполя (м)",
+        value=st.session_state.config.quad_length,
+        min_value=0.02,
+        max_value=0.5,
+        step=0.01,
+        format="%.2f",
+        key="quad_length",
+        help="Физическая длина каждого квадруполя. Тонкая линза = 0, реалистично 0.05–0.2 м",
+    )
+
     # Update session state
     st.session_state.config = BeamlineConfig(
         drift_length=st.session_state.config.drift_length,
         emit_x=emit_x * 1e-9,
         emit_y=emit_y * 1e-9,
+        quad_length=quad_length,
     )
 
     st.sidebar.markdown("---")
@@ -263,7 +273,7 @@ def parameters_panel() -> None:
     use_penalty = st.sidebar.checkbox(
         "Использовать штраф за большие β-функции",
         value=st.session_state.use_penalty,
-        key="use_penalty_checkbox",
+        key="use_penalty",
     )
 
     beta_limit = st.sidebar.number_input(
@@ -285,7 +295,6 @@ def parameters_panel() -> None:
         key="penalty_weight_input",
     )
 
-    st.session_state.use_penalty = use_penalty
     st.session_state.beta_limit = beta_limit
     st.session_state.penalty_weight = penalty_weight
 
@@ -299,16 +308,16 @@ def parameters_panel() -> None:
         k1 = st.number_input(
             "k₁",
             value=st.session_state.quads.k1,
-            min_value=-5.0,
-            max_value=5.0,
+            min_value=-10.0,
+            max_value=10.0,
             step=0.01,
             key="k1",
         )
         k3 = st.number_input(
             "k₃",
             value=st.session_state.quads.k3,
-            min_value=-5.0,
-            max_value=5.0,
+            min_value=-10.0,
+            max_value=10.0,
             step=0.01,
             key="k3",
         )
@@ -316,16 +325,16 @@ def parameters_panel() -> None:
         k2 = st.number_input(
             "k₂",
             value=st.session_state.quads.k2,
-            min_value=-5.0,
-            max_value=5.0,
+            min_value=-10.0,
+            max_value=10.0,
             step=0.01,
             key="k2",
         )
         k4 = st.number_input(
             "k₄",
             value=st.session_state.quads.k4,
-            min_value=-5.0,
-            max_value=5.0,
+            min_value=-10.0,
+            max_value=10.0,
             step=0.01,
             key="k4",
         )
@@ -427,14 +436,18 @@ def main():
         st.subheader("Фазовое пространство")
 
         position_options = [
-            "Вход (начало)", "После Q1", "После Q2",
-            "После Q3", "После Q4", "Выход (конец)"
+            "Вход (начало)",
+            "После Q1",
+            "После Q2",
+            "После Q3",
+            "После Q4",
+            "Выход (конец)",
         ]
         selected_idx = st.selectbox(
             "Выберите позицию:",
             range(len(position_options)),
             format_func=lambda i: position_options[i],
-            key="phase_space_position"
+            key="phase_space_position",
         )
 
         tab_x, tab_y = st.tabs(["Плоскость X (x, x')", "Плоскость Y (y, y')"])
@@ -444,7 +457,7 @@ def main():
             st.session_state.config,
             st.session_state.quads,
             st.session_state.twiss_target,
-            selected_position_index=selected_idx
+            selected_position_index=selected_idx,
         )
 
         with tab_x:

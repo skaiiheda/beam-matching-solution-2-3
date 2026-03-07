@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Tuple
 
 import numpy as np
@@ -30,6 +30,9 @@ class BeamlineConfig:
     drift_length: float
     emit_x: float
     emit_y: float
+    # Физическая длина каждого квадруполя (м).
+    # По умолчанию 0.1 м — реалистичное значение для согласующей секции.
+    quad_length: float = 0.1
 
 
 @dataclass
@@ -49,8 +52,48 @@ def drift_matrix(L: float) -> np.ndarray:
     return np.array([[1, L], [0, 1]])
 
 
-def quad_matrix(k: float) -> np.ndarray:
-    return np.array([[1, 0], [-k, 1]])
+def quad_matrix_thick(k: float, L: float) -> np.ndarray:
+    """
+    Матрица переноса толстого квадруполя длиной L с градиентом k (м⁻²).
+
+    Для k > 0 (фокусировка в X):
+        M = [[cos(phi),        sin(phi)/sqrt(k)],
+             [-sqrt(k)*sin(phi), cos(phi)      ]]
+        где phi = sqrt(k) * L
+
+    Для k < 0 (дефокусировка в X):
+        M = [[cosh(phi),       sinh(phi)/sqrt(|k|)],
+             [sqrt(|k|)*sinh(phi), cosh(phi)      ]]
+        где phi = sqrt(|k|) * L
+
+    При k ≈ 0 возвращает матрицу дрейфа (предел).
+    """
+    if abs(k) < 1e-10:
+        return drift_matrix(L)
+
+    if k > 0:
+        phi = np.sqrt(k) * L
+        sqk = np.sqrt(k)
+        return np.array(
+            [
+                [np.cos(phi), np.sin(phi) / sqk],
+                [-sqk * np.sin(phi), np.cos(phi)],
+            ]
+        )
+    else:
+        phi = np.sqrt(-k) * L
+        sqk = np.sqrt(-k)
+        return np.array(
+            [
+                [np.cosh(phi), np.sinh(phi) / sqk],
+                [sqk * np.sinh(phi), np.cosh(phi)],
+            ]
+        )
+
+
+def quad_matrix_thick_defoc(k: float, L: float) -> np.ndarray:
+    """Матрица для дефокусирующей плоскости (знак k инвертирован)."""
+    return quad_matrix_thick(-k, L)
 
 
 def multiply_matrices(a: np.ndarray, b: np.ndarray) -> np.ndarray:
@@ -75,50 +118,25 @@ def propagate_twiss(twiss: TwissParams, M: np.ndarray) -> TwissParams:
 def create_beamline(
     config: BeamlineConfig, quads: QuadrupoleSettings
 ) -> List[BeamlineElement]:
-    return [
-        BeamlineElement(type="quad", position=0, length=0.05, k=quads.k1, label="Q1"),
-        BeamlineElement(type="drift", position=0.05, length=config.drift_length),
-        BeamlineElement(
-            type="quad",
-            position=0.05 + config.drift_length,
-            length=0.05,
-            k=quads.k2,
-            label="Q2",
-        ),
-        BeamlineElement(
-            type="drift",
-            position=0.05 + config.drift_length + 0.05,
-            length=config.drift_length,
-        ),
-        BeamlineElement(
-            type="quad",
-            position=0.05 + config.drift_length + 0.05 + config.drift_length,
-            length=0.05,
-            k=quads.k3,
-            label="Q3",
-        ),
-        BeamlineElement(
-            type="drift",
-            position=0.05 + config.drift_length + 0.05 + config.drift_length + 0.05,
-            length=config.drift_length,
-        ),
-        BeamlineElement(
-            type="quad",
-            position=0.05
-            + config.drift_length
-            + 0.05
-            + config.drift_length
-            + 0.05
-            + config.drift_length,
-            length=0.05,
-            k=quads.k4,
-            label="Q4",
-        ),
-    ]
+    ql = config.quad_length
+    dl = config.drift_length
+    pos = 0.0
+    elements = []
+
+    for i, k in enumerate([quads.k1, quads.k2, quads.k3, quads.k4], start=1):
+        elements.append(
+            BeamlineElement(type="quad", position=pos, length=ql, k=k, label=f"Q{i}")
+        )
+        pos += ql
+        if i < 4:
+            elements.append(BeamlineElement(type="drift", position=pos, length=dl))
+            pos += dl
+
+    return elements
 
 
 def get_total_length(config: BeamlineConfig) -> float:
-    return 3 * config.drift_length
+    return 4 * config.quad_length + 3 * config.drift_length
 
 
 def propagate_through_beamline_x(
@@ -127,51 +145,35 @@ def propagate_through_beamline_x(
     quads: QuadrupoleSettings,
     points_per_drift: int = 50,
 ) -> Tuple[TwissParams, List[Tuple[float, TwissParams]]]:
-    history = []
-    current_twiss = TwissParams(beta=twiss_in.beta, alpha=twiss_in.alpha)
+    """
+    Распространение в фокусирующей плоскости (X) с толстыми квадруполями.
+    Возвращает (твисс на выходе, история[(s, TwissParams)]).
+    """
+    history: List[Tuple[float, TwissParams]] = []
+    tw = TwissParams(beta=twiss_in.beta, alpha=twiss_in.alpha)
     s = 0.0
+    ql = config.quad_length
+    dl = config.drift_length
+    ks = [quads.k1, quads.k2, quads.k3, quads.k4]
+    quad_pts = max(5, points_per_drift // 5)
 
-    # Q1
-    history.append((s, TwissParams(beta=current_twiss.beta, alpha=current_twiss.alpha)))
-    current_twiss = propagate_twiss(current_twiss, quad_matrix(quads.k1))
-    s += 0.001
+    for i, k in enumerate(ks):
+        # --- квадруполь ---
+        for j in range(quad_pts + 1):
+            ds = ql * j / quad_pts
+            history.append((s + ds, propagate_twiss(tw, quad_matrix_thick(k, ds))))
+        tw = propagate_twiss(tw, quad_matrix_thick(k, ql))
+        s += ql
 
-    # Drift 1
-    for i in range(points_per_drift + 1):
-        ds = (config.drift_length * i) / points_per_drift
-        twiss_at_s = propagate_twiss(current_twiss, drift_matrix(ds))
-        history.append((s + ds, twiss_at_s))
-    current_twiss = propagate_twiss(current_twiss, drift_matrix(config.drift_length))
-    s += config.drift_length
+        # --- дрейф (кроме последнего элемента) ---
+        if i < 3:
+            for j in range(points_per_drift + 1):
+                ds = dl * j / points_per_drift
+                history.append((s + ds, propagate_twiss(tw, drift_matrix(ds))))
+            tw = propagate_twiss(tw, drift_matrix(dl))
+            s += dl
 
-    # Q2
-    current_twiss = propagate_twiss(current_twiss, quad_matrix(quads.k2))
-    s += 0.001
-
-    # Drift 2
-    for i in range(points_per_drift + 1):
-        ds = (config.drift_length * i) / points_per_drift
-        twiss_at_s = propagate_twiss(current_twiss, drift_matrix(ds))
-        history.append((s + ds, twiss_at_s))
-    current_twiss = propagate_twiss(current_twiss, drift_matrix(config.drift_length))
-    s += config.drift_length
-
-    # Q3
-    current_twiss = propagate_twiss(current_twiss, quad_matrix(quads.k3))
-    s += 0.001
-
-    # Drift 3
-    for i in range(points_per_drift + 1):
-        ds = (config.drift_length * i) / points_per_drift
-        twiss_at_s = propagate_twiss(current_twiss, drift_matrix(ds))
-        history.append((s + ds, twiss_at_s))
-    current_twiss = propagate_twiss(current_twiss, drift_matrix(config.drift_length))
-    s += config.drift_length
-
-    # Q4
-    current_twiss = propagate_twiss(current_twiss, quad_matrix(quads.k4))
-
-    return current_twiss, history
+    return tw, history
 
 
 def propagate_through_beamline_y(
@@ -180,19 +182,64 @@ def propagate_through_beamline_y(
     quads: QuadrupoleSettings,
     points_per_drift: int = 50,
 ) -> Tuple[TwissParams, List[Tuple[float, TwissParams]]]:
-    quads_y = QuadrupoleSettings(k1=-quads.k1, k2=-quads.k2, k3=-quads.k3, k4=-quads.k4)
-    return propagate_through_beamline_x(twiss_in, config, quads_y, points_per_drift)
+    """
+    Распространение в дефокусирующей плоскости (Y) — знаки k инвертированы.
+    """
+    history: List[Tuple[float, TwissParams]] = []
+    tw = TwissParams(beta=twiss_in.beta, alpha=twiss_in.alpha)
+    s = 0.0
+    ql = config.quad_length
+    dl = config.drift_length
+    ks = [quads.k1, quads.k2, quads.k3, quads.k4]
+    quad_pts = max(5, points_per_drift // 5)
+
+    for i, k in enumerate(ks):
+        # --- квадруполь (Y: дефокусирующий) ---
+        for j in range(quad_pts + 1):
+            ds = ql * j / quad_pts
+            history.append(
+                (s + ds, propagate_twiss(tw, quad_matrix_thick_defoc(k, ds)))
+            )
+        tw = propagate_twiss(tw, quad_matrix_thick_defoc(k, ql))
+        s += ql
+
+        # --- дрейф ---
+        if i < 3:
+            for j in range(points_per_drift + 1):
+                ds = dl * j / points_per_drift
+                history.append((s + ds, propagate_twiss(tw, drift_matrix(ds))))
+            tw = propagate_twiss(tw, drift_matrix(dl))
+            s += dl
+
+    return tw, history
 
 
 def mismatch(beta_t, alpha_t, beta_a, alpha_a):
-    """t = target, a = actual"""
+    """
+    Параметр несогласования Курана–Тенга.
+    Равен 0 при полном согласовании, > 0 иначе.
+    """
     gamma_t = (1 + alpha_t**2) / beta_t
     gamma_a = (1 + alpha_a**2) / beta_a
     return 0.5 * (beta_t * gamma_a - 2 * alpha_t * alpha_a + gamma_t * beta_a) - 1
 
 
-def loss(twiss_out, twiss_target, twiss_history_x, twiss_history_y, use_penalty=False, beta_limit=10.0, penalty_weight=0.01):
-    # Основное условие согласования
+def loss(
+    twiss_out,
+    twiss_target,
+    twiss_history_x,
+    twiss_history_y,
+    use_penalty=False,
+    beta_limit=6.0,
+    penalty_weight=0.1,
+):
+    """
+    Функция потерь = mismatch²(X) + mismatch²(Y) + штраф за β-пики.
+
+    Штраф нормирован: ox = max(0, beta_max - beta_limit) / beta_limit,
+    поэтому при beta_max = 2·beta_limit вклад штрафа равен 1.0 *penalty_weight,
+    что сопоставимо с единичным несогласованием.
+    """
     Mx = mismatch(
         twiss_target.x.beta, twiss_target.x.alpha, twiss_out.x.beta, twiss_out.x.alpha
     )
@@ -201,14 +248,12 @@ def loss(twiss_out, twiss_target, twiss_history_x, twiss_history_y, use_penalty=
     )
 
     penalty = 0.0
-    if use_penalty:
-        # Штраф за большие пики β-функции
+    if use_penalty and twiss_history_x and twiss_history_y:
         beta_x_max = max(t.beta for _, t in twiss_history_x)
         beta_y_max = max(t.beta for _, t in twiss_history_y)
-
-        penalty = (max(0, beta_x_max - beta_limit) / beta_limit) ** 2 + (
-            max(0, beta_y_max - beta_limit) / beta_limit
-        ) ** 2
+        ox = max(0.0, beta_x_max - beta_limit) / beta_limit
+        oy = max(0.0, beta_y_max - beta_limit) / beta_limit
+        penalty = ox**2 + oy**2
 
     return Mx**2 + My**2 + penalty_weight * penalty
 
@@ -230,93 +275,65 @@ def optimize_quadrupoles(
     twiss_target: TwissParamsXY,
     config: BeamlineConfig,
     optimize_drift: bool = True,
-    use_penalty: bool = False,
-    beta_limit: float = 10.0,
-    penalty_weight: float = 0.01,
+    use_penalty: bool = True,
+    beta_limit: float = 6.0,
+    penalty_weight: float = 0.1,
 ) -> dict:
-    # Количество точек для расчёта β-максимума при штрафе должно совпадать
-    # с тем, что используется при отображении, иначе оптимизатор минимизирует
-    # "другой" максимум и результат после отображения может сильно отличаться.
-    # Компромисс: points_per_drift=20 — достаточно точно и быстро.
+    """
+    Двухэтапная оптимизация квадруполей.
+
+    Этап 1: differential_evolution с штрафом за β-пики.
+      Глобальный поиск ищет решение, которое одновременно согласовано
+      И имеет умеренные β-максимумы.
+
+    Этап 2: Nelder-Mead — сначала со штрафом, затем чистый mismatch,
+      для максимальной точности согласования.
+    """
     PTS = 20
 
-    if optimize_drift:
-        def objective(x: np.ndarray) -> float:
-            quads = QuadrupoleSettings(k1=x[0], k2=x[1], k3=x[2], k4=x[3])
-            cfg = BeamlineConfig(
-                drift_length=x[4], emit_x=config.emit_x, emit_y=config.emit_y
+    def _propagate(x: np.ndarray):
+        quads = QuadrupoleSettings(k1=x[0], k2=x[1], k3=x[2], k4=x[3])
+        cfg = (
+            BeamlineConfig(
+                drift_length=x[4],
+                emit_x=config.emit_x,
+                emit_y=config.emit_y,
+                quad_length=config.quad_length,
             )
-            result_x, history_x = propagate_through_beamline_x(
-                twiss_in.x, cfg, quads, points_per_drift=PTS
-            )
-            result_y, history_y = propagate_through_beamline_y(
-                twiss_in.y, cfg, quads, points_per_drift=PTS
-            )
-            twiss_out = TwissParamsXY(x=result_x, y=result_y)
-            Mx = mismatch(
-                twiss_target.x.beta, twiss_target.x.alpha,
-                twiss_out.x.beta, twiss_out.x.alpha,
-            )
-            My = mismatch(
-                twiss_target.y.beta, twiss_target.y.alpha,
-                twiss_out.y.beta, twiss_out.y.alpha,
-            )
-            penalty = 0.0
-            if use_penalty:
-                beta_x_max = max(t.beta for _, t in history_x)
-                beta_y_max = max(t.beta for _, t in history_y)
-                penalty = (max(0, beta_x_max - beta_limit) / beta_limit) ** 2 + (
-                    max(0, beta_y_max - beta_limit) / beta_limit
-                ) ** 2
-            return Mx**2 + My**2 + penalty_weight * penalty
+            if optimize_drift
+            else config
+        )
+        rx, hx = propagate_through_beamline_x(twiss_in.x, cfg, quads, PTS)
+        ry, hy = propagate_through_beamline_y(twiss_in.y, cfg, quads, PTS)
+        return TwissParamsXY(x=rx, y=ry), hx, hy
 
-        bounds = [
-            (-10.0, 10.0),  # k1
-            (-10.0, 10.0),  # k2
-            (-10.0, 10.0),  # k3
-            (-10.0, 10.0),  # k4
-            (0.3, 3.0),     # drift_length
-        ]
-        x0_drift = config.drift_length
+    def obj_full(x):
+        twiss_out, hx, hy = _propagate(x)
+        return loss(
+            twiss_out,
+            twiss_target,
+            hx,
+            hy,
+            use_penalty=use_penalty,
+            beta_limit=beta_limit,
+            penalty_weight=penalty_weight,
+        )
 
-    else:
-        # Фиксированная длина дрейфа — оптимизируем только квадруполи (4 переменные)
-        def objective(x: np.ndarray) -> float:
-            quads = QuadrupoleSettings(k1=x[0], k2=x[1], k3=x[2], k4=x[3])
-            result_x, history_x = propagate_through_beamline_x(
-                twiss_in.x, config, quads, points_per_drift=PTS
-            )
-            result_y, history_y = propagate_through_beamline_y(
-                twiss_in.y, config, quads, points_per_drift=PTS
-            )
-            twiss_out = TwissParamsXY(x=result_x, y=result_y)
-            Mx = mismatch(
-                twiss_target.x.beta, twiss_target.x.alpha,
-                twiss_out.x.beta, twiss_out.x.alpha,
-            )
-            My = mismatch(
-                twiss_target.y.beta, twiss_target.y.alpha,
-                twiss_out.y.beta, twiss_out.y.alpha,
-            )
-            penalty = 0.0
-            if use_penalty:
-                beta_x_max = max(t.beta for _, t in history_x)
-                beta_y_max = max(t.beta for _, t in history_y)
-                penalty = (max(0, beta_x_max - beta_limit) / beta_limit) ** 2 + (
-                    max(0, beta_y_max - beta_limit) / beta_limit
-                ) ** 2
-            return Mx**2 + My**2 + penalty_weight * penalty
+    def obj_nomatch(x):
+        twiss_out, hx, hy = _propagate(x)
+        return loss(twiss_out, twiss_target, hx, hy, use_penalty=False)
 
-        bounds = [
-            (-10.0, 10.0),  # k1
-            (-10.0, 10.0),  # k2
-            (-10.0, 10.0),  # k3
-            (-10.0, 10.0),  # k4
-        ]
+    bounds = [
+        (-10.0, 10.0),  # k1
+        (-10.0, 10.0),  # k2
+        (-10.0, 10.0),  # k3
+        (-10.0, 10.0),  # k4
+        *([(0.3, 3.0)] if optimize_drift else []),  # drift_length
+    ]
 
-    # Шаг 1: глобальный поиск
+    # Этап 1: глобальный поиск
     res_global = differential_evolution(
-        objective,
+        obj_full,
         bounds,
         maxiter=3000,
         tol=1e-14,
@@ -324,25 +341,33 @@ def optimize_quadrupoles(
         popsize=25,
     )
 
-    # Шаг 2: локальная доводка
+    # Этап 2а: локальная доводка со штрафом
     res_local = minimize(
-        objective,
+        obj_full,
         res_global.x,
         method="Nelder-Mead",
-        options={"xatol": 1e-12, "fatol": 1e-12, "maxiter": 50000},
+        options={"xatol": 1e-11, "fatol": 1e-11, "maxiter": 200000},
+    )
+
+    # Этап 2б: финальная доводка только по mismatch
+    res_final = minimize(
+        obj_nomatch,
+        res_local.x,
+        method="Nelder-Mead",
+        options={"xatol": 1e-12, "fatol": 1e-12, "maxiter": 200000},
     )
 
     if optimize_drift:
-        k1, k2, k3, k4, L = res_local.x
+        k1, k2, k3, k4, L = res_final.x
     else:
-        k1, k2, k3, k4 = res_local.x
+        k1, k2, k3, k4 = res_final.x
         L = config.drift_length
 
     return {
         "quads": QuadrupoleSettings(k1=k1, k2=k2, k3=k3, k4=k4),
         "drift_length": L,
-        "error": res_local.fun,
-        "success": res_local.fun < 1e-10,
+        "error": res_final.fun,
+        "success": res_final.fun < 1e-10,
     }
 
 
@@ -350,7 +375,6 @@ def generate_phase_space_ellipse(
     twiss: TwissParams, emittance: float, num_points: int = 100
 ) -> List[Tuple[float, float]]:
     points = []
-    gamma = calculate_gamma(twiss.beta, twiss.alpha)
     sqrt_eps = np.sqrt(emittance)
     sqrt_beta = np.sqrt(twiss.beta)
 
@@ -374,7 +398,12 @@ def calculate_envelope(
     ]
 
 
-DEFAULT_CONFIG = BeamlineConfig(drift_length=1.0, emit_x=10e-9, emit_y=2e-9)
+DEFAULT_CONFIG = BeamlineConfig(
+    drift_length=1.0,
+    emit_x=10e-9,
+    emit_y=2e-9,
+    quad_length=0.1,
+)
 
 DEFAULT_TWISS_IN = TwissParamsXY(
     x=TwissParams(beta=5.0, alpha=-0.5), y=TwissParams(beta=2.5, alpha=0.3)
