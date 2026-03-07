@@ -21,7 +21,6 @@ from beam_matching import (
     drift_matrix,
     format_number,
     generate_phase_space_ellipse,
-    multiply_matrices,
     optimize_quadrupoles,
     percent_error,
     propagate_through_beamline_x,

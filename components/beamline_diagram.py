@@ -1,254 +1,203 @@
 from dataclasses import dataclass
 from typing import List, Tuple
-import plotly.graph_objects as go
-import numpy as np
 
-from beam_matching import QuadrupoleSettings, BeamlineConfig
+import numpy as np
+import plotly.graph_objects as go
+
+from beam_matching.optics import BeamlineConfig, QuadrupoleSettings
 
 
 def create_beamline_diagram(
     quads: QuadrupoleSettings,
-    config: BeamlineConfig
+    config: BeamlineConfig,
 ) -> go.Figure:
     """
-    Create a Plotly-based beamline schematic visualization.
-    
-    Shows Q1 → Drift → Q2 → Drift → Q3 → Drift → Q4 layout.
-    
-    Args:
-        quads: Quadrupole settings with k1, k2, k3, k4 strengths
-        config: Beamline configuration with drift_length
-    
-    Returns:
-        Plotly Figure object
+    Plotly-визуализация пучкового канала.
+
+    Поддерживает 4 или 5 квадруполей в зависимости от config.n_quads.
     """
+    n = config.n_quads
     drift_length = config.drift_length
-    k_values = [quads.k1, quads.k2, quads.k3, quads.k4]
-    labels = ['Q1', 'Q2', 'Q3', 'Q4']
-    
-    # Calculate positions
-    # Q1 at 0, Q2 at drift_length, Q3 at 2*drift_length, Q4 at 3*drift_length
-    quad_positions = [0, drift_length, 2*drift_length, 3*drift_length]
-    
+    k_values = quads.to_list(n)
+    labels = [f"Q{i + 1}" for i in range(n)]
+
+    # Позиции квадруполей: Q_i начинается в i * drift_length
+    quad_positions = [i * drift_length for i in range(n)]
+    total_length = (n - 1) * drift_length
+
     fig = go.Figure()
-    
-    # Determine lens type and colors
-    def get_lens_color(k: float) -> str:
+
+    def get_color(k: float) -> str:
         if abs(k) < 0.001:
-            return '#9ca3af'  # gray-400 (neutral)
-        return '#10b981' if k > 0 else '#f43f5e'  # green (focusing) or red (defocusing)
-    
+            return "#9ca3af"
+        return "#10b981" if k > 0 else "#f43f5e"
+
     def get_lens_type(k: float) -> str:
         if abs(k) < 0.001:
-            return 'neutral'
-        return 'focusing' if k > 0 else 'defocusing'
-    
-    # Draw quadrupoles as vertical bars
-    bar_width = 0.08  # meters
-    max_height = max(abs(k) for k in k_values) if k_values else 1.0
-    scale_height = 2.0 / max(max_height, 0.1)  # Normalize heights
-    
+            return "нейтральный"
+        return "фокусировка" if k > 0 else "дефокусировка"
+
+    bar_width = 0.06 * max(drift_length, 1.0)
+    max_k = max(abs(k) for k in k_values) if k_values else 1.0
+    scale_height = 2.0 / max(max_k, 0.1)
+
     for i, (pos, k, label) in enumerate(zip(quad_positions, k_values, labels)):
-        color = get_lens_color(k)
+        color = get_color(k)
         lens_type = get_lens_type(k)
-        
-        # Height proportional to strength, with minimum height
-        height = abs(k) * scale_height
-        height = max(height, 0.5)
-        
-        # Draw quad as a filled rectangle using polygon
-        quad_x = [pos - bar_width/2, pos + bar_width/2, pos + bar_width/2, pos - bar_width/2]
-        quad_y = [-height/2, -height/2, height/2, height/2]
-        
-        fig.add_trace(go.Scatter(
-            x=quad_x,
-            y=quad_y,
-            fill='toself',
-            fillcolor=color,
-            line=dict(color=color, width=2),
-            mode='lines',
-            name=f'{label} ({lens_type})',
-            showlegend=i == 0  # Only show legend for first quad
-        ))
-        
-        # Add label above quad
+        height = max(abs(k) * scale_height, 0.5)
+
+        quad_x = [
+            pos - bar_width / 2,
+            pos + bar_width / 2,
+            pos + bar_width / 2,
+            pos - bar_width / 2,
+            pos - bar_width / 2,
+        ]
+        quad_y = [-height / 2, -height / 2, height / 2, height / 2, -height / 2]
+
+        fig.add_trace(
+            go.Scatter(
+                x=quad_x,
+                y=quad_y,
+                fill="toself",
+                fillcolor=color,
+                line=dict(color=color, width=2),
+                mode="lines",
+                name=f"{label} ({lens_type})",
+                showlegend=False,
+                hovertemplate=f"<b>{label}</b><br>k = {k:.4f} м⁻²<br>{lens_type}<extra></extra>",
+            )
+        )
+
         fig.add_annotation(
             x=pos,
-            y=height/2 + 0.3,
-            text=f'<b>{label}</b>',
+            y=height / 2 + 0.3,
+            text=f"<b>{label}</b>",
             showarrow=False,
-            font=dict(size=14, family='Arial Black'),
-            yanchor='bottom'
+            font=dict(size=13, family="Arial Black"),
+            yanchor="bottom",
         )
-        
-        # Add k value below quad
         fig.add_annotation(
             x=pos,
-            y=-height/2 - 0.3,
-            text=f'k={k:.3f}',
+            y=-height / 2 - 0.25,
+            text=f"k={k:.3f}",
             showarrow=False,
-            font=dict(size=10, color='#64748b'),
-            yanchor='top'
+            font=dict(size=10, color="#64748b"),
+            yanchor="top",
         )
-    
-    # Draw drift spaces as horizontal lines
-    total_length = 3 * drift_length
-    
-    # Drift 1: between Q1 and Q2
-    drift_y = 0
-    fig.add_shape(
-        type='line',
-        x0=bar_width/2, y0=drift_y,
-        x1=drift_length - bar_width/2, y1=drift_y,
-        line=dict(color='#e2e8f0', width=4)
-    )
-    
-    # Drift 2: between Q2 and Q3
-    fig.add_shape(
-        type='line',
-        x0=drift_length + bar_width/2, y0=drift_y,
-        x1=2*drift_length - bar_width/2, y1=drift_y,
-        line=dict(color='#e2e8f0', width=4)
-    )
-    
-    # Drift 3: between Q3 and Q4
-    fig.add_shape(
-        type='line',
-        x0=2*drift_length + bar_width/2, y0=drift_y,
-        x1=3*drift_length - bar_width/2, y1=drift_y,
-        line=dict(color='#e2e8f0', width=4)
-    )
-    
-    # Add drift length labels
-    drift_label_y = -0.8
-    fig.add_annotation(
-        x=drift_length / 2,
-        y=drift_label_y,
-        text=f'L={drift_length:.1f}m',
-        showarrow=False,
-        font=dict(size=9, color='#94a3b8'),
-        yanchor='top'
-    )
-    fig.add_annotation(
-        x=1.5 * drift_length,
-        y=drift_label_y,
-        text=f'L={drift_length:.1f}m',
-        showarrow=False,
-        font=dict(size=9, color='#94a3b8'),
-        yanchor='top'
-    )
-    fig.add_annotation(
-        x=2.5 * drift_length,
-        y=drift_label_y,
-        text=f'L={drift_length:.1f}m',
-        showarrow=False,
-        font=dict(size=9, color='#94a3b8'),
-        yanchor='top'
-    )
-    
-    # Add beam direction arrow
-    arrow_y = 1.5
-    arrow_x_start = 0.2
-    arrow_x_end = total_length - 0.2
-    
+
+    # Дрейфы между квадруполями
+    for i in range(n - 1):
+        x0 = quad_positions[i] + bar_width / 2
+        x1 = quad_positions[i + 1] - bar_width / 2
+        fig.add_shape(
+            type="line",
+            x0=x0,
+            y0=0,
+            x1=x1,
+            y1=0,
+            line=dict(color="#e2e8f0", width=4),
+        )
+        mid = (quad_positions[i] + quad_positions[i + 1]) / 2
+        fig.add_annotation(
+            x=mid,
+            y=-1.1,
+            text=f"L={drift_length:.2f}м",
+            showarrow=False,
+            font=dict(size=9, color="#94a3b8"),
+            yanchor="top",
+        )
+
+    # Стрелка направления пучка
+    arrow_y = 1.6
     fig.add_annotation(
         x=total_length / 2,
         y=arrow_y,
-        text='<b>Направление пучка →</b>',
+        text="<b>Направление пучка →</b>",
         showarrow=False,
-        font=dict(size=12, color='#64748b'),
-        yanchor='bottom'
+        font=dict(size=12, color="#64748b"),
+        yanchor="bottom",
     )
-    
-    # Draw arrow line
-    fig.add_shape(
-        type='line',
-        x0=arrow_x_start, y0=arrow_y - 0.15,
-        x1=arrow_x_end - 0.1, y1=arrow_y - 0.15,
-        line=dict(color='#64748b', width=2)
+
+    # Легенда: цветные маркеры
+    fig.add_trace(
+        go.Scatter(
+            x=[None],
+            y=[None],
+            mode="markers",
+            marker=dict(color="#10b981", size=14, symbol="square"),
+            name="Фокусировка X (k > 0)",
+        )
     )
-    
-    # Draw arrow head
-    fig.add_shape(
-        type='path',
-        path=f'M {arrow_x_end - 0.1},{arrow_y - 0.15} L {arrow_x_end - 0.2},{arrow_y - 0.25} L {arrow_x_end - 0.2},{arrow_y - 0.05} Z',
-        line=dict(color='#64748b', width=2),
-        fillcolor='#64748b'
+    fig.add_trace(
+        go.Scatter(
+            x=[None],
+            y=[None],
+            mode="markers",
+            marker=dict(color="#f43f5e", size=14, symbol="square"),
+            name="Дефокусировка X (k < 0)",
+        )
     )
-    
-    # Update layout
+
     fig.update_layout(
         title=dict(
-            text='<b>Компоновка пучкового канала</b>',
+            text=f"<b>Компоновка пучкового канала ({n} квадруполя)</b>",
             x=0.5,
-            xanchor='center',
-            font=dict(size=18)
+            xanchor="center",
+            font=dict(size=17),
         ),
         xaxis=dict(
-            title=dict(text='Позиция вдоль пучкового канала (м)', standoff=10),
-            range=[-0.3, total_length + 0.3],
+            title=dict(text="Позиция вдоль пучкового канала (м)", standoff=10),
+            range=[-0.3 * drift_length, total_length + 0.3 * drift_length],
             showgrid=True,
-            gridcolor='#f1f5f9',
+            gridcolor="#f1f5f9",
             zeroline=False,
-            tickmode='linear',
+            tickmode="linear",
             tick0=0,
-            dtick=drift_length
+            dtick=drift_length,
         ),
         yaxis=dict(
-            title=dict(text='Сила квадруполя (нормализованная)', standoff=10),
-            range=[-2, 2],
+            title=dict(text="Сила квадруполя (норм.)", standoff=10),
+            range=[-2.0, 2.2],
             showgrid=True,
-            gridcolor='#f1f5f9',
+            gridcolor="#f1f5f9",
             zeroline=True,
-            zerolinecolor='#94a3b8',
+            zerolinecolor="#94a3b8",
             zerolinewidth=1,
             showticklabels=False,
-            fixedrange=True
+            fixedrange=True,
         ),
         showlegend=True,
         legend=dict(
-            orientation='h',
-            yanchor='bottom',
+            orientation="h",
+            yanchor="bottom",
             y=1.02,
-            xanchor='center',
+            xanchor="center",
             x=0.5,
-            bgcolor='rgba(255,255,255,0.8)',
-            bordercolor='#e2e8f0',
-            borderwidth=1
+            bgcolor="rgba(255,255,255,0.8)",
+            bordercolor="#e2e8f0",
+            borderwidth=1,
         ),
         margin=dict(l=60, r=60, t=80, b=80),
-        plot_bgcolor='#ffffff',
-        paper_bgcolor='#ffffff',
+        plot_bgcolor="#ffffff",
+        paper_bgcolor="#ffffff",
         height=400,
-        font=dict(family='Arial', size=11)
+        font=dict(family="Arial", size=11),
     )
-    
-    # Add legend entries manually
-    fig.add_trace(go.Scatter(
-        x=[None], y=[None],
-        mode='markers',
-        marker=dict(color='#10b981', size=15, symbol='square'),
-        name='Фокусировка (k > 0) в плоскости X',
-        legendgroup='focusing'
-    ))
-    fig.add_trace(go.Scatter(
-        x=[None], y=[None],
-        mode='markers',
-        marker=dict(color='#f43f5e', size=15, symbol='square'),
-        name='Дефокусировка (k < 0) в плоскости X',
-        legendgroup='defocusing'
-    ))
-    
     return fig
 
 
-if __name__ == '__main__':
-    # Test the diagram with default settings
-    from beam_matching import DEFAULT_CONFIG, QuadrupoleSettings
-    
-    quads = QuadrupoleSettings(k1=0.5, k2=-0.3, k3=0.4, k4=-0.2)
-    config = DEFAULT_CONFIG
-    
-    fig = create_beamline_diagram(quads, config)
+if __name__ == "__main__":
+    from beam_matching.optics import DEFAULT_CONFIG
+
+    quads = QuadrupoleSettings(k1=0.5, k2=-0.3, k3=0.4, k4=-0.2, k5=0.3)
+    config5 = BeamlineConfig(
+        drift_length=1.0, emit_x=10e-9, emit_y=2e-9, quad_length=0.1, n_quads=5
+    )
+    fig = create_beamline_diagram(quads, config5)
     fig.show()
-    print("Beamline diagram test passed!")
+    print("OK: 5 квадруполей")
+
+    fig4 = create_beamline_diagram(quads, DEFAULT_CONFIG)
+    fig4.show()
+    print("OK: 4 квадруполя")
