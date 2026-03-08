@@ -1,11 +1,17 @@
-from typing import Tuple, List
-import plotly.graph_objects as go
-import numpy as np
+from typing import List, Tuple
 
-from beam_matching import (
-    TwissParams, TwissParamsXY, BeamlineConfig, QuadrupoleSettings,
-    propagate_through_beamline_x, propagate_through_beamline_y,
-    generate_phase_space_ellipse, DEFAULT_TWISS_TARGET
+import numpy as np
+import plotly.graph_objects as go
+
+from beam_matching.optics import (
+    DEFAULT_TWISS_TARGET,
+    BeamlineConfig,
+    QuadrupoleSettings,
+    TwissParams,
+    TwissParamsXY,
+    generate_phase_space_ellipse,
+    propagate_through_beamline_x,
+    propagate_through_beamline_y,
 )
 
 
@@ -16,113 +22,131 @@ def _create_phase_space_panel(
     current_ellipse: List[Tuple[float, float]],
     x_label: str,
     xp_label: str,
-    scale: float
 ) -> go.Figure:
     """
-    Create a single phase space plot panel.
+    Панель фазового пространства с автоматическим масштабированием осей.
 
-    Args:
-        title: Panel title
-        input_ellipse: List of (x, x') points for input ellipse
-        target_ellipse: List of (x, x') points for target ellipse
-        current_ellipse: List of (x, x') points for current position ellipse
-        x_label: X-axis label
-        xp_label: Y-axis label
-        scale: Axis scale
-
-    Returns:
-        Plotly Figure
+    Масштаб подбирается индивидуально под каждую плоскость (X или Y),
+    так что эллипсы всегда занимают большую часть области графика.
     """
+
+    def _coords(ellipse):
+        xs = [p[0] for p in ellipse] + [ellipse[0][0]]
+        ys = [p[1] for p in ellipse] + [ellipse[0][1]]
+        return xs, ys
+
+    x_in, xp_in = _coords(input_ellipse)
+    x_target, xp_target = _coords(target_ellipse)
+    x_current, xp_current = _coords(current_ellipse)
+
+    # --- Автосайз: берём максимум по всем трём эллипсам этой плоскости ---
+    all_x = x_in + x_target + x_current
+    all_xp = xp_in + xp_target + xp_current
+
+    x_max = max(abs(v) for v in all_x) or 1.0
+    xp_max = max(abs(v) for v in all_xp) or 1.0
+
+    # Небольшой отступ (15 %) чтобы эллипсы не упирались в края
+    x_pad = x_max * 1.15
+    xp_pad = xp_max * 1.15
+
     fig = go.Figure()
 
-    # Extract x and xp coordinates
-    x_in = [p[0] for p in input_ellipse]
-    xp_in = [p[1] for p in input_ellipse]
-    x_target = [p[0] for p in target_ellipse]
-    xp_target = [p[1] for p in target_ellipse]
-    x_current = [p[0] for p in current_ellipse]
-    xp_current = [p[1] for p in current_ellipse]
+    # Входной эллипс — оранжевый пунктир
+    fig.add_trace(
+        go.Scatter(
+            x=x_in,
+            y=xp_in,
+            mode="lines",
+            name="Вход",
+            line=dict(color="#f59e0b", width=2, dash="dash"),
+            hoverinfo="skip",
+        )
+    )
 
-    # Close the ellipses by adding first point at the end
-    x_in_closed = x_in + [x_in[0]]
-    xp_in_closed = xp_in + [xp_in[0]]
-    x_target_closed = x_target + [x_target[0]]
-    xp_target_closed = xp_target + [xp_target[0]]
-    x_current_closed = x_current + [x_current[0]]
-    xp_current_closed = xp_current + [xp_current[0]]
+    # Целевой эллипс — зелёный точечный
+    fig.add_trace(
+        go.Scatter(
+            x=x_target,
+            y=xp_target,
+            mode="lines",
+            name="Цель",
+            line=dict(color="#10b981", width=2, dash="dot"),
+            hoverinfo="skip",
+        )
+    )
 
-    # Input ellipse (dashed orange)
-    fig.add_trace(go.Scatter(
-        x=x_in_closed,
-        y=xp_in_closed,
-        mode='lines',
-        name='Вход (пунктир)',
-        line=dict(color='#f59e0b', width=2, dash='5,5'),
-        hoverinfo='skip'
-    ))
+    # Текущая позиция — красный сплошной (заливка)
+    fig.add_trace(
+        go.Scatter(
+            x=x_current,
+            y=xp_current,
+            mode="lines",
+            name="Текущая позиция",
+            fill="toself",
+            fillcolor="rgba(244, 63, 94, 0.08)",
+            line=dict(color="#f43f5e", width=2.5),
+            hovertemplate=f"{x_label}: %{{x:.3g}}<br>{xp_label}: %{{y:.3g}}<extra></extra>",
+        )
+    )
 
-    # Target ellipse (dotted green)
-    fig.add_trace(go.Scatter(
-        x=x_target_closed,
-        y=xp_target_closed,
-        mode='lines',
-        name='Цель (точки)',
-        line=dict(color='#10b981', width=1.5, dash='1,3'),
-        hoverinfo='skip'
-    ))
-
-    # Current ellipse (solid rose)
-    fig.add_trace(go.Scatter(
-        x=x_current_closed,
-        y=xp_current_closed,
-        mode='lines',
-        name='Текущая позиция',
-        line=dict(color='#f43f5e', width=2),
-        hovertemplate=f'{x_label}: %{{x:.2f}} мкм<br>{xp_label}: %{{y:.4f}} мрад<extra></extra>'
-    ))
-    
-    # Update layout
     fig.update_layout(
         title=dict(
-            text=f'<b>{title}</b>',
+            text=f"<b>{title}</b>",
             x=0.5,
-            xanchor='center',
-            font=dict(size=14)
+            xanchor="center",
+            font=dict(size=14, color="#1e293b"),
         ),
         xaxis=dict(
-            title=x_label,
-            range=[-scale, scale],
+            title=dict(text=x_label, font=dict(size=12)),
+            range=[-x_pad, x_pad],
             showgrid=True,
-            gridcolor='#f1f5f9',
+            gridcolor="#f1f5f9",
+            gridwidth=1,
             zeroline=True,
-            zerolinecolor='#94a3b8'
+            zerolinecolor="#cbd5e1",
+            zerolinewidth=1.5,
+            tickformat=".2g",
+            showline=True,
+            linecolor="#e2e8f0",
+            mirror=True,
         ),
         yaxis=dict(
-            title=xp_label,
-            range=[-scale * 0.001, scale * 0.001],
+            title=dict(text=xp_label, font=dict(size=12)),
+            range=[-xp_pad, xp_pad],
             showgrid=True,
-            gridcolor='#f1f5f9',
+            gridcolor="#f1f5f9",
+            gridwidth=1,
             zeroline=True,
-            zerolinecolor='#94a3b8'
+            zerolinecolor="#cbd5e1",
+            zerolinewidth=1.5,
+            tickformat=".2g",
+            showline=True,
+            linecolor="#e2e8f0",
+            mirror=True,
+            scaleanchor="x",  # квадратный аспект — эллипс не деформируется
+            scaleratio=1,
         ),
         showlegend=True,
         legend=dict(
-            orientation='h',
-            yanchor='bottom',
-            y=1.02,
-            xanchor='center',
+            orientation="h",
+            yanchor="bottom",
+            y=1.03,
+            xanchor="center",
             x=0.5,
-            bgcolor='rgba(255,255,255,0.8)',
-            bordercolor='#e2e8f0',
-            borderwidth=1
+            bgcolor="rgba(255,255,255,0.9)",
+            bordercolor="#e2e8f0",
+            borderwidth=1,
+            font=dict(size=11),
         ),
-        margin=dict(l=60, r=60, t=60, b=60),
-        plot_bgcolor='#ffffff',
-        paper_bgcolor='#ffffff',
-        height=400,
-        font=dict(family='Arial', size=11)
+        margin=dict(l=70, r=30, t=70, b=60),
+        plot_bgcolor="#ffffff",
+        paper_bgcolor="#ffffff",
+        autosize=True,  # растягивается под контейнер Streamlit
+        height=420,
+        font=dict(family="Inter, Arial, sans-serif", size=11),
     )
-    
+
     return fig
 
 
@@ -131,111 +155,93 @@ def create_phase_space_plot(
     config: BeamlineConfig,
     quads: QuadrupoleSettings,
     twiss_target: TwissParamsXY = None,
-    selected_position_index: int = 5,
-    points_per_drift: int = 50
+    selected_position_index: int = 0,
+    points_per_drift: int = 50,
 ) -> Tuple[go.Figure, go.Figure]:
     """
-    Create phase space plots for X and Y planes.
+    Фазовые портреты для плоскостей X и Y.
 
-    Returns two figures (one for X-plane, one for Y-plane).
-    These should be displayed using Streamlit tabs.
-
-    Args:
-        twiss_in: Input Twiss parameters
-        config: Beamline configuration
-        quads: Quadrupole settings
-        twiss_target: Target Twiss parameters (optional)
-        selected_position_index: Position to display (0=Input, 1=After Q1, 2=After Q2, 3=After Q3, 4=After Q4, 5=Output)
-        points_per_drift: Number of points per drift in history
-
-    Returns:
-        Tuple of (x_plane_figure, y_plane_figure)
+    Позиции (selected_position_index):
+        0              — вход
+        1 … n_quads    — после Q_i
+        n_quads + 1    — выход (конец)
     """
     if twiss_target is None:
         twiss_target = DEFAULT_TWISS_TARGET
 
-    # Propagate through beamline and capture history
-    twiss_out_x, history_x = propagate_through_beamline_x(
+    n = config.n_quads
+
+    _, history_x = propagate_through_beamline_x(
         twiss_in.x, config, quads, points_per_drift
     )
-    twiss_out_y, history_y = propagate_through_beamline_y(
+    _, history_y = propagate_through_beamline_y(
         twiss_in.y, config, quads, points_per_drift
     )
 
-    def get_twiss_at_position(pos_idx: int, history: List, twiss_out: TwissParams) -> TwissParams:
-        """Get Twiss parameters at specified position along beamline."""
-        if pos_idx == 0:
+    def _twiss_at(pos_idx: int, history: List) -> TwissParams:
+        """
+        Возвращает параметры Твисса в нужной точке истории.
+
+        pos_idx == 0          → начало
+        pos_idx == i (1..n)   → конец i-го квадруполя
+        pos_idx >= n+1        → конец трассировки
+        """
+        if pos_idx <= 0:
             return history[0][1]
-        elif pos_idx == 1:
-            return history[1][1]
-        elif pos_idx == 2:
-            idx = 1 + (points_per_drift + 1)
-            return history[idx][1]
-        elif pos_idx == 3:
-            idx = 1 + 2 * (points_per_drift + 1)
-            return history[idx][1]
-        elif pos_idx == 4 or pos_idx == 5:
-            return twiss_out
-        else:
-            return twiss_out
+        if pos_idx > n:
+            return history[-1][1]
 
-    # Get Twiss parameters at selected position
-    current_twiss_x = get_twiss_at_position(selected_position_index, history_x, twiss_out_x)
-    current_twiss_y = get_twiss_at_position(selected_position_index, history_y, twiss_out_y)
+        # Ищем ближайшую точку истории по s-координате
+        # Конец i-го квадруполя: s = i * quad_length + (i-1) * drift_length
+        ql = config.quad_length
+        dl = config.drift_length
+        s_target = pos_idx * ql + (pos_idx - 1) * dl
 
-    # Generate ellipses for X-plane
-    ellipse_x_in = generate_phase_space_ellipse(twiss_in.x, config.emit_x, 100)
-    ellipse_x_target = generate_phase_space_ellipse(twiss_target.x, config.emit_x, 100)
-    ellipse_x_current = generate_phase_space_ellipse(current_twiss_x, config.emit_x, 100)
+        # Бинарный поиск по s
+        s_vals = [h[0] for h in history]
+        idx = int(np.searchsorted(s_vals, s_target))
+        idx = min(idx, len(history) - 1)
+        return history[idx][1]
 
-    # Generate ellipses for Y-plane
-    ellipse_y_in = generate_phase_space_ellipse(twiss_in.y, config.emit_y, 100)
-    ellipse_y_target = generate_phase_space_ellipse(twiss_target.y, config.emit_y, 100)
-    ellipse_y_current = generate_phase_space_ellipse(current_twiss_y, config.emit_y, 100)
+    twiss_x = _twiss_at(selected_position_index, history_x)
+    twiss_y = _twiss_at(selected_position_index, history_y)
 
-    # Calculate axis scale from all ellipses
-    all_ellipses = [
-        ellipse_x_in, ellipse_x_target, ellipse_x_current,
-        ellipse_y_in, ellipse_y_target, ellipse_y_current
-    ]
-    max_x = max(abs(p[0]) for ellipse in all_ellipses for p in ellipse)
-    max_xp = max(abs(p[1]) for ellipse in all_ellipses for p in ellipse)
-    scale = max(max_x, max_xp / 0.001) * 1.2
+    # Эллипсы X
+    ell_x_in = generate_phase_space_ellipse(twiss_in.x, config.emit_x, 120)
+    ell_x_target = generate_phase_space_ellipse(twiss_target.x, config.emit_x, 120)
+    ell_x_current = generate_phase_space_ellipse(twiss_x, config.emit_x, 120)
 
-    # Create X-plane figure
+    # Эллипсы Y
+    ell_y_in = generate_phase_space_ellipse(twiss_in.y, config.emit_y, 120)
+    ell_y_target = generate_phase_space_ellipse(twiss_target.y, config.emit_y, 120)
+    ell_y_current = generate_phase_space_ellipse(twiss_y, config.emit_y, 120)
+
     fig_x = _create_phase_space_panel(
-        title='Фазовое пространство плоскости X',
-        input_ellipse=ellipse_x_in,
-        target_ellipse=ellipse_x_target,
-        current_ellipse=ellipse_x_current,
-        x_label='x (мкм)',
-        xp_label="x' (мрад)",
-        scale=scale
+        title="Фазовое пространство — плоскость X",
+        input_ellipse=ell_x_in,
+        target_ellipse=ell_x_target,
+        current_ellipse=ell_x_current,
+        x_label="x (м)",
+        xp_label="x′ (рад)",
     )
 
-    # Create Y-plane figure
     fig_y = _create_phase_space_panel(
-        title='Фазовое пространство плоскости Y',
-        input_ellipse=ellipse_y_in,
-        target_ellipse=ellipse_y_target,
-        current_ellipse=ellipse_y_current,
-        x_label='y (мкм)',
-        xp_label="y' (мрад)",
-        scale=scale
+        title="Фазовое пространство — плоскость Y",
+        input_ellipse=ell_y_in,
+        target_ellipse=ell_y_target,
+        current_ellipse=ell_y_current,
+        x_label="y (м)",
+        xp_label="y′ (рад)",
     )
 
     return fig_x, fig_y
 
 
-if __name__ == '__main__':
-    # Test the phase space plot with default settings
-    from beam_matching import DEFAULT_CONFIG, DEFAULT_TWISS_IN, QuadrupoleSettings
-    
+if __name__ == "__main__":
+    from optics import DEFAULT_CONFIG, DEFAULT_TWISS_IN
+
     quads = QuadrupoleSettings(k1=0.5, k2=-0.3, k3=0.4, k4=-0.2)
-    config = DEFAULT_CONFIG
-    twiss_in = DEFAULT_TWISS_IN
-    
-    fig_x, fig_y = create_phase_space_plot(twiss_in, config, quads)
+    fig_x, fig_y = create_phase_space_plot(DEFAULT_TWISS_IN, DEFAULT_CONFIG, quads)
     fig_x.show()
     fig_y.show()
-    print("Phase space plot test passed!")
+    print("OK")
